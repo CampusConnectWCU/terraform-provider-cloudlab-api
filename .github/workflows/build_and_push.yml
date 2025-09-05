@@ -25,24 +25,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compute owner/repo + tag
+      - name: Compute owner (lowercase) + tag
         id: vars
         run: |
           owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           echo "owner_lc=$owner_lc" >> $GITHUB_OUTPUT
-
-          # choose TAG from workflow input or release tag
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             tag="${{ inputs.tag }}"
           else
-            # release event: use the tag name from the release ref (refs/tags/vX.Y.Z)
-            tag="${{ github.ref_name }}"
+            tag="${{ github.ref_name }}"   # e.g. v1.2.3 from the Release
           fi
-          if [ -z "$tag" ]; then
-            echo "No tag resolved. Provide 'inputs.tag' or run on a 'release: published' event."
-            exit 1
-          fi
+          [ -n "$tag" ] || { echo "No tag resolved"; exit 1; }
           echo "tag=$tag" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU 
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -51,26 +51,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & Push
-        env:
-          IMAGE: ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ env.IMAGE_BASENAME }}
-          TAG: ${{ steps.vars.outputs.tag }}
-        run: |
-          set -euo pipefail
-          export IMAGE TAG
-          docker compose build
-          docker compose push
+      - name: Build & Push (Dockerfile → GHCR)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ env.IMAGE_BASENAME }}:${{ steps.vars.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Tag & Push latest (pull then retag; on release only)
+      - name: Tag & Push latest (registry retag; on release only)
         if: github.event_name == 'release'
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ env.IMAGE_BASENAME }}
           TAG: ${{ steps.vars.outputs.tag }}
         run: |
           set -euo pipefail
-          # Ensure the release image exists locally
-          if ! docker image inspect "${IMAGE}:${TAG}" >/dev/null 2>&1; then
-            docker pull "${IMAGE}:${TAG}"
-          fi
-          docker tag "${IMAGE}:${TAG}" "${IMAGE}:latest"
-          docker push "${IMAGE}:latest"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:latest" \
+            "${IMAGE}:${TAG}"
