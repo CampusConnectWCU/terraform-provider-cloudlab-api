@@ -210,6 +210,11 @@ def experimentStatus():
     app.logger.info(f'Response: {response}')
     return (response.output, ERRORMESSAGES[exitval][1])
 
+@app.route('/health', methods=['GET'])
+def healthCheck():
+    app.logger.info("healthCheck")
+    return "OK", 200    
+
 
 @app.route('/experiment', methods=['DELETE'])
 def terminateExperiment():
