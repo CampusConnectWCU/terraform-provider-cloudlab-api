@@ -1,0 +1,72 @@
+name: Build & Push cloudlab-terraform-api to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish (e.g., v1.2.3)"
+        required: true
+        type: string
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASENAME: cloudlab-terraform-api
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute owner/repo + tag
+        id: vars
+        run: |
+          owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "owner_lc=$owner_lc" >> $GITHUB_OUTPUT
+
+          # choose TAG from workflow input or release tag
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            # release event: use the tag name from the release ref (refs/tags/vX.Y.Z)
+            tag="${{ github.ref_name }}"
+          fi
+          if [ -z "$tag" ]; then
+            echo "No tag resolved. Provide 'inputs.tag' or run on a 'release: published' event."
+            exit 1
+          fi
+          echo "tag=$tag" >> $GITHUB_OUTPUT
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ env.IMAGE_BASENAME }}
+          TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          set -euo pipefail
+          export IMAGE TAG
+          docker compose build
+          docker compose push
+
+      - name: Tag & Push latest (on release only)
+        if: github.event_name == 'release'
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.vars.outputs.owner_lc }}/${{ env.IMAGE_BASENAME }}
+        run: |
+          set -euo pipefail
+          # retag the already-built local image to :latest and push
+          docker tag "${IMAGE}:${{ steps.vars.outputs.tag }}" "${IMAGE}:latest"
+          docker push "${IMAGE}:latest"
